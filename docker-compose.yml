@@ -1,0 +1,23 @@
+services:
+  biomni:
+    build: .
+    image: biomni:local
+    tty: true
+    stdin_open: true
+    environment:
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+      - OPENAI_ENDPOINT
+      - GEMINI_API_KEY
+      - GROQ_API_KEY
+      - LLM_SOURCE
+      - AWS_BEARER_TOKEN_BEDROCK
+      - AWS_REGION
+      - CUSTOM_MODEL_BASE_URL
+      - CUSTOM_MODEL_API_KEY
+      - BIOMNI_DATA_PATH=/opt/biomni/data
+      - BIOMNI_TIMEOUT_SECONDS
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./data:/opt/biomni/data

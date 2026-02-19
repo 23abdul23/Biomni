@@ -38,9 +38,19 @@ class KnowHowLoader:
             if filename.upper() in ["README.MD", "QUICK_START.MD"] or filename_without_ext.isupper():
                 continue
 
-            # Read the document
-            with open(filepath) as f:
-                content = f.read()
+            # Read the document robustly with encoding fallbacks
+            # Read raw bytes first, then try sensible decodings to avoid UnicodeDecodeError
+            with open(filepath, "rb") as f:
+                raw = f.read()
+
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    content = raw.decode("latin-1")
+                except UnicodeDecodeError:
+                    # As a last resort, replace undecodable bytes
+                    content = raw.decode("utf-8", errors="replace")
 
             # Extract title, description, and metadata from the document
             title, description, metadata = self._extract_metadata(content, filename)
