@@ -29,12 +29,11 @@ def main():
     print(f"Using model: {model} (OPENAI_API_KEY loaded: {'yes' if api_key else 'no'})")
 
     agent = A1(path="./data", llm=model)
-    agent.launch_gradio_demo()
     
     prompt = (
         # "Summarize in one paragraph how CRISPR screens can identify genes that regulate T cell exhaustion, and provide a short checklist of experimental controls to include."
         # "Look fo indications suitable for B cell depletion based on CD19 and BCMA bispecific antibody or drug"
-        "Suggest some GEO study to study cancer cells on human body"
+        "Download the GEO study with Id GSE14605, and then perform differential analysis on that"
     )
 
     print("Running agent.go()... this may take a while depending on model latency.")

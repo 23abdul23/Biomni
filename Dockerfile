@@ -87,4 +87,4 @@ COPY docker/entrypoint.sh /usr/local/bin/biomni-entrypoint
 RUN chmod +x /usr/local/bin/biomni-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/biomni-entrypoint"]
-CMD ["bash"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -39,10 +39,3 @@ async def generate_responce(prompt: str):
     print("\n=== Agent Answer ===\n")
     print(answer)
     return {"responce" : answer}
-
-# prompt = (
-#         # "Summarize in one paragraph how CRISPR screens can identify genes that regulate T cell exhaustion, and provide a short checklist of experimental controls to include."
-#         "Look fo indications suitable for B cell depletion based on CD19 and BCMA bispecific antibody or drug"
-#     )
-
-
