@@ -13,6 +13,8 @@ _captured_plots = []
 def run_python_repl(command: str) -> str:
     """Executes the provided Python command in a persistent environment and returns the output.
     Variables defined in one execution will be available in subsequent executions.
+    If the code produces no printed output but the last statement is an expression,
+    its repr is returned automatically (like an interactive Python REPL).
     """
 
     def execute_in_repl(command: str) -> str:
@@ -30,6 +32,28 @@ def run_python_repl(command: str) -> str:
             # Execute the command in the persistent namespace
             exec(command, _persistent_namespace)
             output = mystdout.getvalue()
+
+            # If nothing was printed, try to evaluate the last line as an
+            # expression and return its repr (like an interactive REPL).
+            if not output.strip():
+                import ast
+
+                try:
+                    tree = ast.parse(command)
+                    if tree.body and isinstance(tree.body[-1], ast.Expr):
+                        # Compile only the last expression in eval mode
+                        last_expr = ast.Expression(body=tree.body[-1].value)
+                        ast.fix_missing_locations(last_expr)
+                        result = eval(
+                            compile(last_expr, "<repl>", "eval"),
+                            _persistent_namespace,
+                        )
+                        if result is not None:
+                            output = repr(result)
+                except Exception:
+                    # If anything goes wrong with the auto-display, just
+                    # return whatever stdout captured (likely empty string).
+                    pass
 
             # Capture any matplotlib plots that were generated
             # _capture_matplotlib_plots()

@@ -197,7 +197,7 @@ from biomni.config import default_config
 from biomni.agent import A1
 
 # RECOMMENDED: Modify global defaults for consistency
-default_config.llm = "gpt-4"
+default_config.llm = "gpt-4o"
 default_config.timeout_seconds = 1200
 
 # All agents AND database queries use these defaults

@@ -1151,7 +1151,7 @@ You may or may not receive feedbacks from human. If so, address the feedbacks by
         # Add protocol generation instructions
         prompt_modifier += """
 PROTOCOL GENERATION:
-If the user requests an experimental protocol, use search_protocols(), advanced_web_search_claude(), list_local_protocols(), and read_local_protocol() to generate an accurate protocol. Include details such as reagents (with catalog numbers if available), equipment specifications, replicate requirements, error handling, and troubleshooting - but ONLY include information found in these resources. Do not make up specifications, catalog numbers, or equipment details. Prioritize accuracy over completeness.
+If the user requests an experimental protocol, use search_protocols(), advanced_web_search_model(), list_local_protocols(), and read_local_protocol() to generate an accurate protocol. Include details such as reagents (with catalog numbers if available), equipment specifications, replicate requirements, error handling, and troubleshooting - but ONLY include information found in these resources. Do not make up specifications, catalog numbers, or equipment details. Prioritize accuracy over completeness.
 """
 
         # Add custom resources section first (highlighted)

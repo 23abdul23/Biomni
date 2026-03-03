@@ -1,9 +1,25 @@
 name: biomni_e1
+
 channels:
   - conda-forge
   - bioconda
-  - defaults
+
 dependencies:
+  # Core
+  - python=3.10
+  - numpy=1.23.*
+  - pandas=1.5.*
+  - scipy=1.10.*
+  - scikit-learn
+  - pip
+
+  # Required by pyscenic
+  - distributed=2023.4.*
+  - dask=2023.4.*
+  - numba
+  - llvmlite
+
+  # Bio CLI
   - blast
   - samtools
   - bowtie2
@@ -12,59 +28,63 @@ dependencies:
   - fastqc
   - trimmomatic
   - mafft
-  - gseapy
   - mageck
   - plannotate
+
+  # Scientific stack (compatible versions)
+  - scanpy=1.9.*
+  - anndata=0.9.*
+  - scikit-bio
+  - pysam
+  - pyfaidx
+  - pyranges
+  - pybedtools
+  - openmm
+  - igraph
+  - pyscenic=0.12.1
+  - cooler
+  - hmmlearn
+  - msprime
+  - tskit
+  - cyvcf2
+  - pykalman
+  - cobra
+  - reportlab
+  - viennarna
+  - faiss-cpu
+
+  # Agent stack (pure Python, safe)
   - pip:
-    - scanpy
-    - biopython
-    - biopandas
-    - biotite
-    - opencv-python
-    - rdkit
-    - macs2
-    - pymc3
-    - cryosparc-tools
-    - lifelines
-    - scikit-image
-    - googlesearch-python
-    - PyPDF2
-    - gget
-    - faiss-cpu
-    - cellxgene-census
-    - scikit-bio
-    - pymed
-    - arxiv
-    - scholarly
-    - umap-learn
-    - scrublet
-    - scvelo
-    - scvi-tools
-    - harmony-pytorch
-    - pyliftover
-    - pytdc==0.4.0
-    - pysam
-    - pyfaidx
-    - pyranges
-    - pybedtools
-    - openmm
-    - pystan
-    - igraph
-    - pyscenic
-    - cooler
-    - trackpy
-    - flowcytometrytools
-    - cellpose
-    - viennarna
-    - PyMassSpec
-    - python-libsbml
-    - cobra
-    - reportlab
-    #- flowkit
-    - hmmlearn
-    - msprime
-    - tskit
-    - cyvcf2
-    - pykalman
-    - community
-    - fanc
+      - langchain==1.2.10
+      - langchain-core==1.2.16
+      - langchain-community
+      - langchain-openai
+      - langchain-anthropic
+      - langchain-ollama
+      - langgraph==1.0.8
+      - openai
+      - tiktoken
+      - anthropic
+      - ollama
+      - googlesearch-python
+      - PyPDF2
+      - pymed
+      - arxiv
+      - scholarly
+      - gget
+      - community
+      - fanc
+      - flowcytometrytools
+      - transformers
+      - huggingface-hub
+      - tokenizers
+      - safetensors
+      - python-dotenv
+      - requests
+      - beautifulsoup4
+      - lxml
+      - tqdm
+      - networkx
+      - gradio
+      - fastapi
+      - uvicorn

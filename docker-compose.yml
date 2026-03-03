@@ -1,10 +1,21 @@
 services:
   biomni:
-    build: .
+    build:
+      context: .
+      args:
+        HTTP_PROXY: "http://172.31.2.4:8080"
+        HTTPS_PROXY: "http://172.31.2.4:8080"
+        NO_PROXY: "localhost,127.0.0.1"
     image: biomni:local
     tty: true
     stdin_open: true
     environment:
+      - HTTP_PROXY=http://172.31.2.4:8080
+      - HTTPS_PROXY=http://172.31.2.4:8080
+      - http_proxy=http://172.31.2.4:8080
+      - https_proxy=http://172.31.2.4:8080
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
       - ANTHROPIC_API_KEY
       - OPENAI_API_KEY
       - OPENAI_ENDPOINT

@@ -8,6 +8,11 @@ Maintains full backward compatibility with existing code.
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+# Load .env file so API keys are available even outside the agent
+load_dotenv(".env", override=False)
+
 
 @dataclass
 class BiomniConfig:
@@ -22,7 +27,7 @@ class BiomniConfig:
         config = BiomniConfig()
 
         # Override specific settings
-        config = BiomniConfig(llm="gpt-4", timeout_seconds=1200)
+        config = BiomniConfig(llm="gpt-4o", timeout_seconds=1200)
 
         # Modify after creation
         config.path = "./custom_data"
@@ -33,7 +38,7 @@ class BiomniConfig:
     timeout_seconds: int = 600
 
     # LLM settings (API keys still from environment)
-    llm: str = "claude-sonnet-4-5"
+    llm: str = "gpt-4o"
     temperature: float = 0.7
 
     # Tool settings

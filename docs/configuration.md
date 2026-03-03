@@ -9,7 +9,7 @@ from biomni.config import default_config
 from biomni.agent import A1
 
 # Option 1: Modify global defaults (affects everything)
-default_config.llm = "gpt-4"
+default_config.llm = "gpt-4o"
 default_config.timeout_seconds = 1200
 
 # Option 2: Use environment variables (set in .env file)
@@ -42,7 +42,7 @@ BIOMNI_PATH=/path/to/data
 from biomni.config import default_config
 
 # Changes apply to all agents and database queries
-default_config.llm = "gpt-4"
+default_config.llm = "gpt-4o"
 default_config.timeout_seconds = 1200
 ```
 
@@ -59,7 +59,7 @@ agent = A1(llm="claude-3-5-sonnet-20241022")
 
 ```python
 # Use GPT-4 everywhere
-default_config.llm = "gpt-4"
+default_config.llm = "gpt-4o"
 agent = A1()
 ```
 

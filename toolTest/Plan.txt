@@ -1,0 +1,41 @@
+﻿Errors found in biomni/tool/run.log (unique):
+1) Error: string indices must be integers
+2) parsing error...
+
+Prompts and step plans per tool/error
+
+A) Tool: query_clinicaltrials
+Prompt:
+"Run query_clinicaltrials for CD19/BCMA B-cell depletion, print the raw return type and first 3 items, then safely extract indication fields without assuming dict shape."
+
+Steps:
+1. Run tool call and print type(trial_results).
+2. If it is str/JSON string, parse with json.loads.
+3. If it is dict, locate the trials list key and normalize to list.
+4. Iterate with isinstance guards.
+5. Access indication with trial.get('indication') only for dict entries.
+6. Add robust logging for malformed entries.
+7. Re-run filter and verify no TypeError.
+
+B) Tool: query_pubmed
+Prompt:
+"Run query_pubmed with max_papers=10 and print return schema (type, keys, first item). If empty, report why and test with a broader query."
+
+Steps:
+1. Execute exact query from log.
+2. Print return type and short preview.
+3. If empty/None, test broader query terms.
+4. Confirm whether tool returns list, dict, or formatted text.
+5. Add parsing adapter to normalize output.
+6. Validate downstream code consumes normalized structure.
+
+C) Error: parsing error... (agent output-format/parser level, not a tool exception)
+Prompt:
+"Validate assistant outputs always include reasoning followed by either <execute> or <solution> tags, and fail fast with a formatter check before sending response."
+
+Steps:
+1. Identify the response-format validator location.
+2. Add pre-send check for required tags.
+3. Add auto-repair step to wrap final content in <solution> when no tool call is needed.
+4. Add unit test for missing-tag failure case.
+5. Re-run the same conversation path and confirm parser error is gone.

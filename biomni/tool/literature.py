@@ -215,7 +215,7 @@ def search_google(query: str, num_results: int = 3, language: str = "en") -> lis
     return results_string
 
 
-def advanced_web_search_claude(
+def advanced_web_search_model(
     query: str,
     max_searches: int = 1,
     max_retries: int = 3,
@@ -240,56 +240,110 @@ def advanced_web_search_claude(
     """
     import random
 
-    import anthropic
-
     try:
         from biomni.config import default_config
 
         model = default_config.llm
-        api_key = default_config.api_key
-        if not api_key:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
+        source = default_config.source
     except ImportError:
-        model = "claude-4-sonnet-latest"
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        model = "gpt-4o"
+        source = None
 
-    if "claude" not in model:
-        raise ValueError("Model must be a Claude model.")
-
-    if not api_key:
-        raise ValueError("Set your api_key explicitly.")
-
-    client = anthropic.Anthropic(api_key=api_key)
-    tool_def = {
-        "type": "web_search_20250305",
-        "name": "web_search",
-        "max_uses": max_searches,
-    }
+    model_l = (model or "").lower()
+    source_l = (source or "").lower()
+    provider = "anthropic" if "claude" in model_l or source_l == "anthropic" else "openai"
 
     delay = random.randint(1, 10)
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                messages=[{"role": "user", "content": query}],
-                tools=[tool_def],
-            )
+            if provider == "anthropic":
+                import anthropic
 
-            paragraphs, citations = [], []
-            response.content = response.content
-            formatted_response = ""
-            for blk in response.content:
-                if blk.type == "text":
-                    paragraphs.append(blk.text)
-                    formatted_response += blk.text
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                if not api_key:
+                    return "Error: ANTHROPIC_API_KEY is not set."
 
-                    if blk.citations:
-                        for cite in blk.citations:
-                            citations.append({"url": cite.url, "title": cite.title, "cited_text": cite.cited_text})
-                            formatted_response += f"(Citation: {cite.title} - {cite.url})"
-            return formatted_response
+                client = anthropic.Anthropic(api_key=api_key)
+                tool_def = {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": max_searches,
+                }
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    messages=[{"role": "user", "content": query}],
+                    tools=[tool_def],
+                )
+
+                formatted_response = ""
+                for blk in response.content:
+                    if blk.type == "text":
+                        formatted_response += blk.text
+                        if blk.citations:
+                            for cite in blk.citations:
+                                formatted_response += f"(Citation: {cite.title} - {cite.url})"
+                return formatted_response
+
+            # Default to OpenAI when non-Claude model is configured (e.g., gpt-4/gpt-4o)
+            from openai import OpenAI
+
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                return "Error: OPENAI_API_KEY is not set."
+
+            client = OpenAI(api_key=api_key)
+            try:
+                response = client.responses.create(
+                    model=model,
+                    input=query,
+                    tools=[{"type": "web_search_preview", "search_context_size": "medium"}],
+                    max_output_tokens=4096,
+                )
+                text = getattr(response, "output_text", None)
+                if text:
+                    return text
+                return str(response)
+            except Exception as openai_tool_error:
+                # Some OpenAI models (e.g., gpt-4) do not support web_search_preview.
+                # Fallback to external search snippets while keeping the configured model.
+                tool_error_text = str(openai_tool_error)
+                if "web_search_preview" not in tool_error_text:
+                    raise
+
+                snippets = search_google(query=query, num_results=max(3, max_searches * 3), language="en")
+                if not snippets:
+                    fallback_response = client.responses.create(
+                        model=model,
+                        input=(
+                            "Web search tooling is unavailable for this model in the current setup. "
+                            "Answer the query using your model knowledge and clearly state that live web retrieval "
+                            "could not be performed.\n\n"
+                            f"Query: {query}"
+                        ),
+                        max_output_tokens=4096,
+                    )
+                    fallback_text = getattr(fallback_response, "output_text", None)
+                    if fallback_text:
+                        return fallback_text
+                    return str(fallback_response)
+
+                grounded_prompt = (
+                    "Use only the web snippets below to answer the query.\n"
+                    "Include source URLs when possible.\n\n"
+                    f"Query: {query}\n\n"
+                    f"Web snippets:\n{snippets}"
+                )
+                grounded_response = client.responses.create(
+                    model=model,
+                    input=grounded_prompt,
+                    max_output_tokens=4096,
+                )
+                grounded_text = getattr(grounded_response, "output_text", None)
+                if grounded_text:
+                    return grounded_text
+                return str(grounded_response)
 
         except Exception as e:
             if attempt < max_retries:
@@ -298,6 +352,11 @@ def advanced_web_search_claude(
                 continue
             print(f"Error performing web search after {max_retries} attempts: {str(e)}")
             return f"Error performing web search after {max_retries} attempts: {str(e)}"
+
+
+def advanced_web_search(query: str, max_searches: int = 1, max_retries: int = 3):
+    """Provider-agnostic alias that routes to the configured default model."""
+    return advanced_web_search_model(query=query, max_searches=max_searches, max_retries=max_retries)
 
 
 def extract_url_content(url: str) -> str:

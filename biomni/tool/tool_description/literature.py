@@ -134,7 +134,7 @@ description = [
     },
     {
         "description": "Initiate an advanced web search by launching a specialized agent to collect relevant information and citations through multiple rounds of web searches for a given query.",
-        "name": "advanced_web_search_claude",
+        "name": "advanced_web_search_model",
         "optional_parameters": [
             {
                 "default": 1,
