@@ -11,7 +11,7 @@ class ToolRetriever:
     def __init__(self):
         pass
 
-    def prompt_based_retrieval(self, query: str, resources: dict, llm=None) -> dict:
+    def prompt_based_retrieval(self, query: str, resources: dict, llm=None, compact: bool = True) -> dict:
         """Use a prompt-based approach to retrieve the most relevant resources for a query.
 
         Args:
@@ -19,6 +19,7 @@ class ToolRetriever:
             resources: A dictionary with keys 'tools', 'data_lake', 'libraries', and 'know_how',
                       each containing a list of available resources
             llm: Optional LLM instance to use for retrieval (if None, will create a new one)
+            compact: Use compact metadata format to reduce prompt size (default True)
 
         Returns:
             A dictionary with the same keys, but containing only the most relevant resources
@@ -36,19 +37,19 @@ Be generous in your selection - include resources that might be useful for the t
 It's better to include slightly more resources than to miss potentially useful ones.
 
 AVAILABLE TOOLS:
-{self._format_resources_for_prompt(resources.get("tools", []))}
+{self._format_resources_for_prompt(resources.get("tools", []), compact=compact)}
 
 AVAILABLE DATA LAKE ITEMS:
-{self._format_resources_for_prompt(resources.get("data_lake", []))}
+{self._format_resources_for_prompt(resources.get("data_lake", []), compact=compact)}
 
 AVAILABLE SOFTWARE LIBRARIES:
-{self._format_resources_for_prompt(resources.get("libraries", []))}""")
+{self._format_resources_for_prompt(resources.get("libraries", []), compact=compact)}""")
 
         # Add know-how section if available
         if "know_how" in resources and resources["know_how"]:
             prompt_sections.append(f"""
 AVAILABLE KNOW-HOW DOCUMENTS (Best Practices & Protocols):
-{self._format_resources_for_prompt(resources.get("know_how", []))}""")
+{self._format_resources_for_prompt(resources.get("know_how", []), compact=compact)}""")
 
         # Build response format based on available categories
         response_format = """
@@ -131,23 +132,34 @@ IMPORTANT GUIDELINES:
 
         return selected_resources
 
-    def _format_resources_for_prompt(self, resources: list) -> str:
-        """Format resources for inclusion in the prompt."""
+    def _format_resources_for_prompt(self, resources: list, compact: bool = True) -> str:
+        """Format resources for inclusion in the prompt.
+
+        Args:
+            resources: List of resource items (dicts, strings, or objects with name/description).
+            compact: When True, emit only name + first sentence of description
+                     (capped at 80 chars per entry) to reduce token usage.
+        """
         formatted = []
         for i, resource in enumerate(resources):
             if isinstance(resource, dict):
-                # Handle dictionary format (from tool registry or data lake/libraries with descriptions)
                 name = resource.get("name", f"Resource {i}")
                 description = resource.get("description", "")
-                formatted.append(f"{i}. {name}: {description}")
             elif isinstance(resource, str):
-                # Handle string format (simple strings)
                 formatted.append(f"{i}. {resource}")
+                continue
             else:
-                # Try to extract name and description from tool objects
                 name = getattr(resource, "name", str(resource))
-                desc = getattr(resource, "description", "")
-                formatted.append(f"{i}. {name}: {desc}")
+                description = getattr(resource, "description", "")
+
+            if compact and description:
+                # First sentence only, capped at 80 chars
+                first_sentence = description.split(". ")[0].strip()
+                if len(first_sentence) > 80:
+                    first_sentence = first_sentence[:77] + "..."
+                formatted.append(f"{i}. {name} — {first_sentence}")
+            else:
+                formatted.append(f"{i}. {name}: {description}")
 
         return "\n".join(formatted) if formatted else "None available"
 

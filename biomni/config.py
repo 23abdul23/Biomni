@@ -54,6 +54,22 @@ class BiomniConfig:
     # LLM source (auto-detected if None)
     source: str | None = None
 
+    # Prompt budgeting settings
+    prompt_token_budget: int = 12000
+    max_tool_desc_tokens: int = 6000
+    max_data_lake_tokens: int = 2000
+    max_library_tokens: int = 1500
+    max_knowhow_tokens: int = 2000
+    compact_tool_descriptions: bool = True  # Use compact mode in textify_api_dict
+
+    # Early-stop heuristics
+    max_agent_steps: int = 15  # Logical iteration cap (not graph transitions)
+    max_consecutive_errors: int = 3  # Stop after N identical consecutive errors
+    stall_detection_window: int = 3  # Compare last N outputs for stall detection
+
+    # Retrieval settings
+    retrieval_compact_mode: bool = True  # Use compact metadata in retrieval prompt
+
     # Third-party integrations
     protocols_io_access_token: str | None = None
 
@@ -80,6 +96,22 @@ class BiomniConfig:
         if os.getenv("BIOMNI_SOURCE"):
             self.source = os.getenv("BIOMNI_SOURCE")
 
+        # Prompt budgeting overrides
+        if os.getenv("BIOMNI_PROMPT_TOKEN_BUDGET"):
+            self.prompt_token_budget = int(os.getenv("BIOMNI_PROMPT_TOKEN_BUDGET"))
+        if os.getenv("BIOMNI_COMPACT_TOOL_DESCRIPTIONS"):
+            self.compact_tool_descriptions = os.getenv("BIOMNI_COMPACT_TOOL_DESCRIPTIONS").lower() == "true"
+
+        # Early-stop overrides
+        if os.getenv("BIOMNI_MAX_AGENT_STEPS"):
+            self.max_agent_steps = int(os.getenv("BIOMNI_MAX_AGENT_STEPS"))
+        if os.getenv("BIOMNI_MAX_CONSECUTIVE_ERRORS"):
+            self.max_consecutive_errors = int(os.getenv("BIOMNI_MAX_CONSECUTIVE_ERRORS"))
+
+        # Retrieval overrides
+        if os.getenv("BIOMNI_RETRIEVAL_COMPACT_MODE"):
+            self.retrieval_compact_mode = os.getenv("BIOMNI_RETRIEVAL_COMPACT_MODE").lower() == "true"
+
         # Protocols.io access token (prefer specific env vars)
         env_token = os.getenv("PROTOCOLS_IO_ACCESS_TOKEN") or os.getenv("BIOMNI_PROTOCOLS_IO_ACCESS_TOKEN")
         if env_token:
@@ -97,6 +129,12 @@ class BiomniConfig:
             "base_url": self.base_url,
             "api_key": self.api_key,
             "source": self.source,
+            "prompt_token_budget": self.prompt_token_budget,
+            "compact_tool_descriptions": self.compact_tool_descriptions,
+            "max_agent_steps": self.max_agent_steps,
+            "max_consecutive_errors": self.max_consecutive_errors,
+            "stall_detection_window": self.stall_detection_window,
+            "retrieval_compact_mode": self.retrieval_compact_mode,
         }
 
 

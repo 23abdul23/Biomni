@@ -804,37 +804,62 @@ def parse_hpo_obo(file_path):
     return hp_dict
 
 
-def textify_api_dict(api_dict):
-    """Convert a nested API dictionary to a nicely formatted string."""
+def textify_api_dict(api_dict, compact: bool = False):
+    """Convert a nested API dictionary to a nicely formatted string.
+
+    Parameters
+    ----------
+    api_dict : dict
+        Nested dictionary of API categories → list of method descriptors.
+    compact : bool, optional
+        When *True*, emit only method name, first-sentence description,
+        and required parameter names/types (no descriptions, no optional
+        params).  Reduces token count by ~60-70%.
+    """
     lines = []
     for category, methods in api_dict.items():
         lines.append(f"Import file: {category}")
         lines.append("=" * (len("Import file: ") + len(category)))
         for method in methods:
             lines.append(f"Method: {method.get('name', 'N/A')}")
-            lines.append(f"  Description: {method.get('description', 'No description provided.')}")
 
-            # Process required parameters
-            req_params = method.get("required_parameters", [])
-            if req_params:
-                lines.append("  Required Parameters:")
-                for param in req_params:
-                    param_name = param.get("name", "N/A")
-                    param_type = param.get("type", "N/A")
-                    param_desc = param.get("description", "No description")
-                    param_default = param.get("default", "None")
-                    lines.append(f"    - {param_name} ({param_type}): {param_desc} [Default: {param_default}]")
+            if compact:
+                # First sentence only
+                desc = method.get("description", "")
+                first_sentence = desc.split(". ")[0].strip()
+                if first_sentence and not first_sentence.endswith("."):
+                    first_sentence += "."
+                lines.append(f"  Description: {first_sentence}")
 
-            # Process optional parameters
-            opt_params = method.get("optional_parameters", [])
-            if opt_params:
-                lines.append("  Optional Parameters:")
-                for param in opt_params:
-                    param_name = param.get("name", "N/A")
-                    param_type = param.get("type", "N/A")
-                    param_desc = param.get("description", "No description")
-                    param_default = param.get("default", "None")
-                    lines.append(f"    - {param_name} ({param_type}): {param_desc} [Default: {param_default}]")
+                # Required params — name and type only
+                req_params = method.get("required_parameters", [])
+                if req_params:
+                    param_strs = [f"{p.get('name', '?')} ({p.get('type', '?')})" for p in req_params]
+                    lines.append(f"  Required: {', '.join(param_strs)}")
+            else:
+                lines.append(f"  Description: {method.get('description', 'No description provided.')}")
+
+                # Process required parameters
+                req_params = method.get("required_parameters", [])
+                if req_params:
+                    lines.append("  Required Parameters:")
+                    for param in req_params:
+                        param_name = param.get("name", "N/A")
+                        param_type = param.get("type", "N/A")
+                        param_desc = param.get("description", "No description")
+                        param_default = param.get("default", "None")
+                        lines.append(f"    - {param_name} ({param_type}): {param_desc} [Default: {param_default}]")
+
+                # Process optional parameters
+                opt_params = method.get("optional_parameters", [])
+                if opt_params:
+                    lines.append("  Optional Parameters:")
+                    for param in opt_params:
+                        param_name = param.get("name", "N/A")
+                        param_type = param.get("type", "N/A")
+                        param_desc = param.get("description", "No description")
+                        param_default = param.get("default", "None")
+                        lines.append(f"    - {param_name} ({param_type}): {param_desc} [Default: {param_default}]")
 
             lines.append("")  # Empty line between methods
         lines.append("")  # Extra empty line after each category

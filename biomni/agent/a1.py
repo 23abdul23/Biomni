@@ -20,6 +20,7 @@ from biomni.llm import SourceType, get_llm
 from biomni.model.retriever import ToolRetriever
 from biomni.tool.support_tools import run_python_repl
 from biomni.tool.tool_registry import ToolRegistry
+from biomni.agent.prompt_builder import build_budgeted_prompt, estimate_tokens, truncate_to_token_budget
 from biomni.utils import (
     check_and_download_s3_files,
     clean_message_content,
@@ -51,6 +52,8 @@ if os.path.exists(".env"):
 class AgentState(TypedDict):
     messages: list[BaseMessage]
     next_step: str | None
+    step_count: int  # logical iteration counter for early-stop
+    error_history: list[str]  # recent execution error strings for stall detection
 
 
 class A1:
@@ -1084,15 +1087,18 @@ class A1:
                     desc = self.library_content_dict.get(item, f"Custom software: {item}")
                     custom_software_formatted.append(f"⚙️ {format_item_with_description(item, desc)}")
 
-        # Format know-how documents - include FULL content (metadata already stripped)
+        # Format know-how documents - include title + first paragraph to save tokens
         know_how_formatted = []
         if know_how_docs:
             for doc in know_how_docs:
                 if isinstance(doc, dict):
                     name = doc.get("name", "Unknown")
                     content = doc.get("content", "")
-                    # Include full content in system prompt (metadata already removed)
-                    know_how_formatted.append(f"📚 {name}:\n{content}")
+                    # Truncate to title + first paragraph to control prompt size
+                    paragraphs = content.strip().split("\n\n")
+                    summary = paragraphs[0] if paragraphs else content[:500]
+                    summary = truncate_to_token_budget(summary, default_config.max_knowhow_tokens // max(1, len(know_how_docs)))
+                    know_how_formatted.append(f"📚 {name}:\n{summary}")
 
         # Base prompt
         prompt_modifier = """
@@ -1260,10 +1266,23 @@ Each library is listed with its description to help you understand its functiona
         library_content_formatted = "\n".join(libraries_formatted)
         data_lake_content_formatted = "\n".join(data_lake_formatted)
 
+        # --- Prompt budgeting: apply token caps to large sections ---
+        use_compact = getattr(default_config, "compact_tool_descriptions", True)
+        tool_desc_text = (
+            textify_api_dict(tool_desc, compact=use_compact) if isinstance(tool_desc, dict) else tool_desc
+        )
+        tool_desc_text = truncate_to_token_budget(tool_desc_text, default_config.max_tool_desc_tokens)
+        data_lake_content_formatted = truncate_to_token_budget(
+            data_lake_content_formatted, default_config.max_data_lake_tokens
+        )
+        library_content_formatted = truncate_to_token_budget(
+            library_content_formatted, default_config.max_library_tokens
+        )
+
         # Format the prompt with the appropriate values
         format_dict = {
             "function_intro": function_intro,
-            "tool_desc": textify_api_dict(tool_desc) if isinstance(tool_desc, dict) else tool_desc,
+            "tool_desc": tool_desc_text,
             "import_instruction": import_instruction,
             "data_lake_path": self.path + "/data_lake",
             "data_lake_intro": data_lake_intro,
@@ -1379,6 +1398,44 @@ Each library is listed with its description to help you understand its functiona
 
         # Define the nodes
         def generate(state: AgentState) -> AgentState:
+            # --- Early-stop: step cap ---
+            step = state.get("step_count", 0) + 1
+            state["step_count"] = step
+            max_steps = getattr(default_config, "max_agent_steps", 15)
+            if step > max_steps:
+                print(f"⚠️  Early stop: reached max_agent_steps ({max_steps})")
+                state["next_step"] = "end"
+                state["messages"].append(
+                    AIMessage(
+                        content=(
+                            f"<solution>Maximum iteration limit ({max_steps}) reached. "
+                            "Returning best available result from previous steps.</solution>"
+                        )
+                    )
+                )
+                return state
+
+            # --- Early-stop: stall detection (repeated identical execute blocks) ---
+            stall_window = getattr(default_config, "stall_detection_window", 3)
+            if step > stall_window:
+                recent_executes = []
+                for m in reversed(state["messages"]):
+                    if isinstance(m, AIMessage) and "<execute>" in (m.content or ""):
+                        match = re.search(r"<execute>(.*?)</execute>", m.content, re.DOTALL)
+                        if match:
+                            recent_executes.append(match.group(1).strip())
+                    if len(recent_executes) >= stall_window:
+                        break
+                if len(recent_executes) >= stall_window and len(set(recent_executes)) == 1:
+                    print(f"⚠️  Early stop: identical execute blocks repeated {stall_window} times")
+                    state["next_step"] = "end"
+                    state["messages"].append(
+                        AIMessage(
+                            content="<solution>Execution stalled — the same code was repeated without progress. Stopping.</solution>"
+                        )
+                    )
+                    return state
+
             # Add OpenAI-specific formatting reminders if using OpenAI models
             system_prompt = self.system_prompt
             if hasattr(self.llm, "model_name") and (
@@ -1550,6 +1607,37 @@ Each library is listed with its description to help you understand its functiona
                 observation = f"\n<observation>{result}</observation>"
                 state["messages"].append(AIMessage(content=observation.strip()))
 
+                # --- Early-stop: consecutive identical errors ---
+                error_indicators = ("Error", "Traceback", "Exception", "ModuleNotFoundError",
+                                    "ImportError", "FileNotFoundError", "KeyError", "NameError")
+                is_error = any(indicator in result for indicator in error_indicators)
+                if is_error:
+                    # Normalize: take first 200 chars as error signature
+                    error_sig = result.strip()[:200]
+                    error_history = state.get("error_history", [])
+                    error_history.append(error_sig)
+                    state["error_history"] = error_history
+
+                    max_consecutive = getattr(default_config, "max_consecutive_errors", 3)
+                    if len(error_history) >= max_consecutive:
+                        recent = error_history[-max_consecutive:]
+                        if len(set(recent)) == 1:
+                            print(f"⚠️  Early stop: same error repeated {max_consecutive} times")
+                            state["next_step"] = "end"
+                            state["messages"].append(
+                                AIMessage(
+                                    content=(
+                                        "<solution>Stopping: the same error occurred "
+                                        f"{max_consecutive} consecutive times. "
+                                        f"Error: {recent[0][:150]}</solution>"
+                                    )
+                                )
+                            )
+                            return state
+                else:
+                    # Reset error history on successful execution
+                    state["error_history"] = []
+
             return state
 
         def routing_function(
@@ -1699,7 +1787,8 @@ Each library is listed with its description to help you understand its functiona
         }
 
         # Use prompt-based retrieval with the agent's LLM
-        selected_resources = self.retriever.prompt_based_retrieval(prompt, resources, llm=self.llm)
+        compact = getattr(default_config, "retrieval_compact_mode", True)
+        selected_resources = self.retriever.prompt_based_retrieval(prompt, resources, llm=self.llm, compact=compact)
         print("\n" + "=" * 60)
         print("🔍 RESOURCE RETRIEVAL")
         print("=" * 60)
@@ -1770,8 +1859,8 @@ Each library is listed with its description to help you understand its functiona
             selected_resources_names = self._prepare_resources_for_retrieval(prompt)
             self.update_system_prompt_with_selected_resources(selected_resources_names)
 
-        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None}
-        config = {"recursion_limit": 500, "configurable": {"thread_id": 42}}
+        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None, "step_count": 0, "error_history": []}
+        config = {"recursion_limit": 100, "configurable": {"thread_id": 42}}
         self.log = []
 
         # Store the final conversation state for markdown generation
@@ -1807,8 +1896,8 @@ Each library is listed with its description to help you understand its functiona
             selected_resources_names = self._prepare_resources_for_retrieval(prompt)
             self.update_system_prompt_with_selected_resources(selected_resources_names)
 
-        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None}
-        config = {"recursion_limit": 500, "configurable": {"thread_id": 42}}
+        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None, "step_count": 0, "error_history": []}
+        config = {"recursion_limit": 100, "configurable": {"thread_id": 42}}
         self.log = []
 
         # Store the final conversation state for markdown generation
@@ -2696,8 +2785,8 @@ Each library is listed with its description to help you understand its functiona
             agent_messages.append(HumanMessage(content=text_input))
 
             # Prepare inputs for the agent
-            inputs = {"messages": agent_messages, "next_step": None}
-            config = {"recursion_limit": 500, "configurable": {"thread_id": thread_id}}
+            inputs = {"messages": agent_messages, "next_step": None, "step_count": 0, "error_history": []}
+            config = {"recursion_limit": 100, "configurable": {"thread_id": thread_id}}
 
             # Stream the agent's responses
             t = time()
