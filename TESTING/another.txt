@@ -1,13 +1,3 @@
-I am planning a pooled CRISPR knockout screen to identify genes that regulate T-cell exhaustion in chronically stimulated CD8+ T cells. How should I design the experiment in terms of CRISPR library selection, infection strategy, stimulation model, and phenotypic readouts? What controls and follow-up experiments would help distinguish regulators of exhaustion from genes affecting proliferation or survival?
-
-I have RNA-seq count data comparing treated versus untreated immune cells and want to identify genes that respond to the treatment. What is a robust differential expression workflow starting from raw count matrices, including quality control checks, normalization methods, statistical modeling, and thresholds for significance? What experimental approaches should be used to validate the most biologically meaningful hits?
-
-I identified a list of genes significantly upregulated in tumor samples compared with normal tissue. What pathway and functional enrichment analyses should I perform to understand the biological mechanisms underlying this signature, and how should I interpret situations where different pathway databases such as KEGG, Reactome, and Gene Ontology produce inconsistent results?
-
-I am analyzing a single-cell RNA-seq dataset from human PBMC samples and want to identify immune cell populations and activation states. What practical analysis pipeline should I follow, including quality control metrics, normalization, dimensionality reduction, clustering, and cell-type annotation? How can I detect and correct batch effects while ensuring that biological signals remain intact?
-
-A genome-wide association study for an autoimmune disease identified several significant loci, most of which lie in non-coding regions. How can I prioritize likely causal genes by integrating evidence from eQTL studies, chromatin interaction datasets, regulatory annotations, and gene expression patterns in relevant immune cell types?
-
 A patient with a suspected rare genetic disorder underwent whole-exome sequencing and several variants of uncertain significance were identified. What systematic workflow should be used to prioritize candidate variants and genes, considering inheritance patterns, allele frequency in population databases, predicted functional impact, gene-disease associations, and available biological evidence?
 
 I want to identify potential drug repurposing opportunities for an inflammatory disease using transcriptomic data. How can disease-associated gene expression signatures be compared with drug perturbation datasets to identify compounds that might reverse the disease phenotype, and what additional evidence should be considered when prioritizing candidate drugs?

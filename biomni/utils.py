@@ -891,6 +891,7 @@ def read_module2api():
         "database",
         "lab_automation",
         "protocols",
+        "file_handling",
     ]
 
     module2api = {}
@@ -1104,6 +1105,78 @@ def has_execution_results(clean_output: str, execution_results) -> bool:
         True if the message contains <execute> tags and has execution results available
     """
     return "<execute>" in clean_output and execution_results is not None and execution_results
+
+
+def format_ask_user_block(content: str) -> str:
+    """Format an <ask_user> block for Markdown / PDF rendering.
+
+    This function takes the raw content inside an ``<ask_user>`` tag and wraps it
+    in a distinctive Markdown block so that exported logs clearly show pause
+    points where the agent requested user input.
+
+    Args:
+        content: The text content extracted from inside the ``<ask_user>`` tags.
+
+    Returns:
+        A formatted Markdown string highlighting the user-input request.
+    """
+    return (
+        "\n---\n"
+        "🔹 **USER INPUT REQUIRED**\n\n"
+        f"{content.strip()}\n\n"
+        "---\n"
+    )
+
+
+def parse_ask_user_tag(msg: str) -> str | None:
+    """Extract content from an ``<ask_user>`` tag in a model response.
+
+    The function performs the same auto-close recovery that is used for
+    ``<execute>`` tags: if the opening tag is present but the closing tag
+    is missing, it treats everything after the opening tag as the content.
+
+    Args:
+        msg: The full model response string.
+
+    Returns:
+        The extracted inner content if an ``<ask_user>`` tag is found,
+        otherwise ``None``.
+    """
+    import re
+
+    # Try well-formed tag first
+    match = re.search(r"<ask_user>(.*?)</ask_user>", msg, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Auto-close: opening tag present but closing tag missing
+    if "<ask_user>" in msg.lower():
+        idx = msg.lower().index("<ask_user>") + len("<ask_user>")
+        return msg[idx:].strip()
+
+    return None
+
+
+def format_ask_user_in_content(content: str) -> str:
+    """Replace raw ``<ask_user>`` blocks in *content* with formatted Markdown.
+
+    This mirrors the behaviour of :func:`format_execute_tags_in_content` but
+    for the ``<ask_user>`` tag.  It is safe to call even when no tags are
+    present – the original string is returned unchanged.
+
+    Args:
+        content: A string that may contain one or more ``<ask_user>`` blocks.
+
+    Returns:
+        The content with every ``<ask_user>…</ask_user>`` block replaced by
+        a rendered Markdown callout.
+    """
+    import re
+
+    def _replace(m):
+        return format_ask_user_block(m.group(1))
+
+    return re.sub(r"<ask_user>(.*?)</ask_user>", _replace, content, flags=re.DOTALL | re.IGNORECASE)
 
 
 def find_matching_execution(clean_output: str, execution_results) -> dict | None:

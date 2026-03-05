@@ -1,9 +1,1 @@
-A patient with a suspected rare genetic disorder underwent whole-exome sequencing and several variants of uncertain significance were identified. What systematic workflow should be used to prioritize candidate variants and genes, considering inheritance patterns, allele frequency in population databases, predicted functional impact, gene-disease associations, and available biological evidence?
-
-I want to identify potential drug repurposing opportunities for an inflammatory disease using transcriptomic data. How can disease-associated gene expression signatures be compared with drug perturbation datasets to identify compounds that might reverse the disease phenotype, and what additional evidence should be considered when prioritizing candidate drugs?
-
-I am studying a protein with no experimentally determined structure and minimal functional annotation. What computational strategy could be used to predict its structure, identify potential binding pockets, and perform ligand docking to generate hypotheses about possible modulators of its activity?
-
-I want to reproduce the main analyses of a published study using a GEO accession number, starting from data retrieval through to the key figures reported in the paper. What reproducible workflow should I follow for downloading the data, preprocessing, normalization, statistical analysis, and generating publication-quality visualizations?
-
-Suppose a gene expression biomarker appears strongly associated with disease progression in an initial patient cohort. What experimental and analytical steps are necessary to validate the biomarker before clinical translation, including assay robustness, cohort design, control of confounding variables, and independent external validation?
+Do differential analyssis and other relevant analyssis on this file of raw gene count , file locations: "/mnt/c/Users/Azeem/Downloads/GEO FILES/GSE168496_raw_counts.tsv"

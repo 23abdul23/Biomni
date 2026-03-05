@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
 from types import *
@@ -6,6 +7,15 @@ from types import *
 from biomni.agent import A1
 app = FastAPI()
 
+origins = ["http://localhost:3000", "https://traces.mbi.in.net"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 def main():
     api_key = os.getenv("OPENAI_API_KEY")
@@ -31,11 +41,11 @@ async def root():
 agent  = main()
 
 
-@app.get("/prompt/{prompt}")
+@app.get("/prompt/")
 async def generate_responce(prompt: str):
     print("Running agent.go()... this may take a while depending on model latency.")
     log, answer = agent.go(prompt)
 
-    print("\n=== Agent Answer ===\n")
-    print(answer)
+    # print("\n=== Agent Answer ===\n")
+    # print(answer)
     return {"responce" : answer}

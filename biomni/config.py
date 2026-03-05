@@ -70,6 +70,12 @@ class BiomniConfig:
     # Retrieval settings
     retrieval_compact_mode: bool = True  # Use compact metadata in retrieval prompt
 
+    # Query categorization and user interaction settings
+    enable_query_categorization: bool = True  # Enables automatic prompt classification
+    categorization_confidence_threshold: float = 0.70  # Minimum confidence for categorizer
+    require_execution_approval: bool = True  # Require user approval before expensive execution
+    enable_user_pause_tag: bool = True  # Enables <ask_user> interaction mechanism
+
     # Third-party integrations
     protocols_io_access_token: str | None = None
 
@@ -112,6 +118,16 @@ class BiomniConfig:
         if os.getenv("BIOMNI_RETRIEVAL_COMPACT_MODE"):
             self.retrieval_compact_mode = os.getenv("BIOMNI_RETRIEVAL_COMPACT_MODE").lower() == "true"
 
+        # Query categorization overrides
+        if os.getenv("BIOMNI_ENABLE_QUERY_CATEGORIZATION"):
+            self.enable_query_categorization = os.getenv("BIOMNI_ENABLE_QUERY_CATEGORIZATION").lower() == "true"
+        if os.getenv("BIOMNI_CATEGORIZATION_CONFIDENCE_THRESHOLD"):
+            self.categorization_confidence_threshold = float(os.getenv("BIOMNI_CATEGORIZATION_CONFIDENCE_THRESHOLD"))
+        if os.getenv("BIOMNI_REQUIRE_EXECUTION_APPROVAL"):
+            self.require_execution_approval = os.getenv("BIOMNI_REQUIRE_EXECUTION_APPROVAL").lower() == "true"
+        if os.getenv("BIOMNI_ENABLE_USER_PAUSE_TAG"):
+            self.enable_user_pause_tag = os.getenv("BIOMNI_ENABLE_USER_PAUSE_TAG").lower() == "true"
+
         # Protocols.io access token (prefer specific env vars)
         env_token = os.getenv("PROTOCOLS_IO_ACCESS_TOKEN") or os.getenv("BIOMNI_PROTOCOLS_IO_ACCESS_TOKEN")
         if env_token:
@@ -135,6 +151,10 @@ class BiomniConfig:
             "max_consecutive_errors": self.max_consecutive_errors,
             "stall_detection_window": self.stall_detection_window,
             "retrieval_compact_mode": self.retrieval_compact_mode,
+            "enable_query_categorization": self.enable_query_categorization,
+            "categorization_confidence_threshold": self.categorization_confidence_threshold,
+            "require_execution_approval": self.require_execution_approval,
+            "enable_user_pause_tag": self.enable_user_pause_tag,
         }
 
 

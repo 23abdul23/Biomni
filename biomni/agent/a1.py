@@ -27,12 +27,15 @@ from biomni.utils import (
     convert_markdown_to_pdf,
     create_parsing_error_html,
     find_matching_execution,
+    format_ask_user_block,
+    format_ask_user_in_content,
     format_execute_tags_in_content,
     format_lists_in_text,
     format_observation_as_terminal,
     function_to_api_schema,
     has_execution_results,
     inject_custom_functions_to_repl,
+    parse_ask_user_tag,
     parse_tool_calls_from_code,
     parse_tool_calls_with_modules,
     pretty_print,
@@ -54,6 +57,10 @@ class AgentState(TypedDict):
     next_step: str | None
     step_count: int  # logical iteration counter for early-stop
     error_history: list[str]  # recent execution error strings for stall detection
+    pending_interaction: bool  # True when agent is waiting for user reply
+    pending_prompt_context: str  # original prompt context carried across pause
+    pending_category: str  # categorization result carried across pause
+    pending_execution_plan: str | None  # optional plan summary carried across pause
 
 
 class A1:
@@ -199,7 +206,7 @@ class A1:
 
         self.llm = get_llm(
             llm,
-            stop_sequences=["</execute>", "</solution>"],
+            stop_sequences=["</execute>", "</solution>", "</ask_user>"],
             source=source,
             base_url=base_url,
             api_key=api_key,
@@ -1125,7 +1132,7 @@ If a step fails or needs modification, mark it with an X and explain why:
 Always show the updated plan after each step so the user can track progress.
 
 At each turn, you should first provide your thinking and reasoning given the conversation history.
-After that, you have two options:
+After that, you have three options:
 
 1) Interact with a programming environment and receive the corresponding output within <observe></observe>. Your code should be enclosed using "<execute>" tag, for example: <execute> print("Hello World!") </execute>. IMPORTANT: You must end the code block with </execute> tag.
    - For Python code (default): <execute> print("Hello World!") </execute>
@@ -1134,6 +1141,12 @@ After that, you have two options:
    - For CLI softwares, use Bash scripts.
 
 2) When you think it is ready, directly provide a solution that adheres to the required format for the given task to the user. Your solution should be enclosed using "<solution>" tag, for example: The answer is <solution> A </solution>. IMPORTANT: You must end the solution block with </solution> tag.
+
+3) When you need user input, clarification, or approval before continuing, use the "<ask_user>" tag. For example: <ask_user>Please provide the protein sequence or UniProt ID so I can proceed with the analysis.</ask_user>. Use this when:
+   - Critical inputs are missing (e.g., gene IDs, file paths, parameters)
+   - Multiple strategies exist and you need the user to choose
+   - Execution requires explicit approval (e.g., running an expensive pipeline)
+   - Clarification is needed to avoid incorrect results
 
 You have many chances to interact with the environment to receive the observation. So you can decompose your code into multiple steps.
 Don't overcomplicate the code. Keep it simple and easy to understand.
@@ -1145,7 +1158,17 @@ Otherwise the system will not be able to know what has been done.
 For R code, use the #!R marker at the beginning of your code block to indicate it's R code.
 For Bash scripts and commands, use the #!BASH marker at the beginning of your code block. This allows for both simple commands and multi-line scripts with variables, loops, conditionals, loops, and other Bash features.
 
-In each response, you must include EITHER <execute> or <solution> tag. Not both at the same time. Do not respond with messages without any tags. No empty messages.
+IMPORTANT — File path handling:
+- When the user provides a Windows file path (e.g. C:\\Users\\...\\file.tsv), ALWAYS use a
+  raw string (r"...") or replace backslashes with forward slashes in your code.
+  For example: path = r"C:\\Users\\Azeem\\Downloads\\GEO FILES\\file.tsv"
+  or:          path = "C:/Users/Azeem/Downloads/GEO FILES/file.tsv"
+  NEVER use a regular string with backslashes — \\U, \\G, \\D etc. are Python escape
+  sequences and will corrupt the path.
+- Always verify the file exists with os.path.exists() before attempting to read it.
+- Paths with spaces are valid; do NOT strip or modify them.
+
+In each response, you must include EXACTLY ONE of <execute>, <solution>, or <ask_user> tag. Not more than one at a time. Do not respond with messages without any tags. No empty messages.
 """
 
         # Add self-critic instructions if needed
@@ -1416,6 +1439,8 @@ Each library is listed with its description to help you understand its functiona
                 return state
 
             # --- Early-stop: stall detection (repeated identical execute blocks) ---
+            # NOTE: Only <execute> blocks contribute to stall counters.
+            # <ask_user> responses must NOT increment stall counters.
             stall_window = getattr(default_config, "stall_detection_window", 3)
             if step > stall_window:
                 recent_executes = []
@@ -1441,7 +1466,7 @@ Each library is listed with its description to help you understand its functiona
             if hasattr(self.llm, "model_name") and (
                 "gpt" in str(self.llm.model_name).lower() or "openai" in str(type(self.llm)).lower()
             ):
-                system_prompt += "\n\nIMPORTANT FOR GPT MODELS: You MUST use XML tags <execute> or <solution> in EVERY response. Do not use markdown code blocks (```) - use <execute> tags instead."
+                system_prompt += "\n\nIMPORTANT FOR GPT MODELS: You MUST use XML tags <execute>, <solution>, or <ask_user> in EVERY response. Do not use markdown code blocks (```) - use <execute> tags instead."
 
             messages = [SystemMessage(content=system_prompt)] + state["messages"]
             response = self.llm.invoke(messages)
@@ -1473,6 +1498,8 @@ Each library is listed with its description to help you understand its functiona
                 msg += "</execute>"
             if "<solution>" in msg and "</solution>" not in msg:
                 msg += "</solution>"
+            if "<ask_user>" in msg and "</ask_user>" not in msg:
+                msg += "</ask_user>"
             if "<think>" in msg and "</think>" not in msg:
                 msg += "</think>"
 
@@ -1480,13 +1507,14 @@ Each library is listed with its description to help you understand its functiona
             think_match = re.search(r"<think>(.*?)</think>", msg, re.DOTALL | re.IGNORECASE)
             execute_match = re.search(r"<execute>(.*?)</execute>", msg, re.DOTALL | re.IGNORECASE)
             answer_match = re.search(r"<solution>(.*?)</solution>", msg, re.DOTALL | re.IGNORECASE)
+            ask_user_match = re.search(r"<ask_user>(.*?)</ask_user>", msg, re.DOTALL | re.IGNORECASE)
 
             # Alternative patterns for OpenAI models that might use different formatting
             if not execute_match:
                 # Try to find code blocks that might be intended as execute blocks
                 code_block_match = re.search(r"```(?:python|bash|r)?\s*(.*?)```", msg, re.DOTALL)
-                if code_block_match and not answer_match:
-                    # If we found a code block and no solution, treat it as execute
+                if code_block_match and not answer_match and not ask_user_match:
+                    # If we found a code block and no solution/ask_user, treat it as execute
                     execute_match = code_block_match
 
             # Add the message to the state before checking for errors
@@ -1494,6 +1522,11 @@ Each library is listed with its description to help you understand its functiona
 
             if answer_match:
                 state["next_step"] = "end"
+            elif ask_user_match:
+                # <ask_user> creates a pause boundary — stop the graph
+                state["next_step"] = "end"
+                state["pending_interaction"] = True
+                state["pending_prompt_context"] = state.get("pending_prompt_context", "")
             elif execute_match:
                 state["next_step"] = "execute"
             elif think_match:
@@ -1519,7 +1552,7 @@ Each library is listed with its description to help you understand its functiona
                     # Try to correct it
                     state["messages"].append(
                         HumanMessage(
-                            content="Each response must include thinking process followed by either <execute> or <solution> tag. But there are no tags in the current response. Please follow the instruction, fix and regenerate the response again."
+                            content="Each response must include thinking process followed by one of <execute>, <solution>, or <ask_user> tag. But there are no tags in the current response. Please follow the instruction, fix and regenerate the response again."
                         )
                     )
                     state["next_step"] = "generate"
@@ -1845,12 +1878,328 @@ Each library is listed with its description to help you understand its functiona
 
         return selected_resources_names
 
+    # ------------------------------------------------------------------
+    # Query categorization helpers
+    # ------------------------------------------------------------------
+
+    def _categorize_query_rules(self, prompt: str) -> tuple[str | None, float]:
+        """Rule-based fast categorization of a user prompt.
+
+        Returns:
+            (category, confidence) where category is one of
+            ``autonomous_execute``, ``direct_answer_no_execute``,
+            ``needs_user_input``, or ``None`` if rules cannot decide.
+        """
+        lower = prompt.lower().strip()
+
+        # --- needs_user_input patterns ---
+        # Very short / vague prompts that lack actionable identifiers
+        if len(lower.split()) <= 3 and not any(
+            kw in lower for kw in ("analyze", "run", "execute", "plot", "compute", "download", "fetch")
+        ):
+            return "needs_user_input", 0.80
+
+        # If the prompt contains a concrete file path, it is almost certainly
+        # actionable — skip the placeholder heuristics entirely.
+        if re.search(r'[A-Za-z]:[/\\]|\.[ct]sv\b|\.csv\b|\.xlsx?\b|\.h5ad\b|\.fastq\b|/data/', lower):
+            pass  # do NOT flag as needs_user_input
+        else:
+            # Explicit placeholder indicators
+            placeholder_patterns = [
+                r"\b(your|my|the)\s+(protein|gene|file|dataset|sequence|id)\b",
+                r"\b(provide|insert|enter|specify|give)\s+(a|an|the|your)\b",
+                # Require id/name/path after the keyword — bare "gene" or "file"
+                # should NOT trigger needs_user_input.
+                r"<?(protein|gene|uniprot|file)\s+(id|name|path)>?",
+            ]
+            for pat in placeholder_patterns:
+                if re.search(pat, lower):
+                    # Only flag if prompt does NOT contain an actual identifier-like token
+                    if not re.search(r"[A-Z]\d{4,}", prompt):  # e.g. P12345
+                        return "needs_user_input", 0.75
+
+        # --- direct_answer_no_execute patterns ---
+        explanation_keywords = [
+            "explain", "describe", "what is", "what are",
+            "how does", "how do", "why does", "why do",
+            "compare and contrast", "summarize", "overview",
+            "strategy for", "best approach", "recommend",
+            "suggest a strategy", "suggest an approach",
+            "design a strategy", "outline a plan",
+        ]
+        for kw in explanation_keywords:
+            if kw in lower:
+                # Only if there is no clear execution intent
+                if not any(act in lower for act in ("run", "execute", "compute", "plot", "download", "fetch", "analyze")):
+                    return "direct_answer_no_execute", 0.80
+
+        # --- autonomous_execute patterns ---
+        execution_keywords = [
+            "run ", "execute ", "compute ", "calculate ",
+            "plot ", "download ", "fetch ", "analyze ",
+            "perform ", "generate ", "create ", "build ",
+        ]
+        # Prompt has a clear execution verb AND contains an actual identifier
+        has_exec_verb = any(kw in lower for kw in execution_keywords)
+        has_identifier = bool(re.search(r"[A-Z0-9]{3,}", prompt))  # crude ID check
+        if has_exec_verb and has_identifier:
+            return "autonomous_execute", 0.85
+
+        return None, 0.0
+
+    def _categorize_query_llm(self, prompt: str) -> tuple[str, float]:
+        """LLM-based fallback categorization.
+
+        Returns:
+            (category, confidence) where category is one of the three standard
+            values.
+        """
+        categorization_prompt = (
+            "You are a query classifier for a biomedical agent.  Classify the "
+            "following user prompt into EXACTLY ONE of these categories:\n\n"
+            "1. autonomous_execute — The prompt is fully actionable and can be "
+            "executed without further input.\n"
+            "2. direct_answer_no_execute — The prompt asks for an explanation, "
+            "strategy, or information that does NOT require running code.\n"
+            "3. needs_user_input — Critical inputs (gene IDs, file paths, "
+            "parameters, etc.) are missing, OR the prompt is ambiguous and "
+            "requires clarification.\n\n"
+            "Respond with ONLY the category name on the first line and a "
+            "confidence score (0.0-1.0) on the second line.\n\n"
+            f"Prompt: {prompt}"
+        )
+        try:
+            response = self.llm.invoke([HumanMessage(content=categorization_prompt)])
+            lines = response.content.strip().splitlines()
+            category = lines[0].strip().lower().replace(" ", "_")
+            confidence = float(lines[1].strip()) if len(lines) > 1 else 0.5
+
+            valid = {"autonomous_execute", "direct_answer_no_execute", "needs_user_input"}
+            if category not in valid:
+                return "needs_user_input", 0.5
+            return category, confidence
+        except Exception as e:
+            print(f"⚠️  LLM categorization failed: {e}")
+            return "needs_user_input", 0.5
+
+    def _categorize_query(self, prompt: str) -> tuple[str, float]:
+        """Hybrid categorization: rules first, then LLM fallback.
+
+        Returns:
+            (category, confidence)
+        """
+        if not default_config.enable_query_categorization:
+            return "autonomous_execute", 1.0
+
+        # 1️⃣ Rule-based detection
+        category, confidence = self._categorize_query_rules(prompt)
+        if category is not None:
+            print(f"🏷️  Query category (rules): {category} (confidence={confidence:.2f})")
+            return category, confidence
+
+        # 2️⃣ LLM fallback
+        category, confidence = self._categorize_query_llm(prompt)
+        print(f"🏷️  Query category (LLM): {category} (confidence={confidence:.2f})")
+
+        # If below threshold, default to needs_user_input
+        if confidence < default_config.categorization_confidence_threshold:
+            print(f"⚠️  Low confidence ({confidence:.2f} < {default_config.categorization_confidence_threshold}), defaulting to needs_user_input")
+            return "needs_user_input", confidence
+
+        return category, confidence
+
+    # ------------------------------------------------------------------
+    # Pause / resume helpers
+    # ------------------------------------------------------------------
+
+    def _interpret_user_reply(self, reply: str) -> str:
+        """Interpret the intent of a user reply to a pending interaction.
+
+        Returns one of ``"approve"``, ``"reject"``, or ``"unclear"``.
+        """
+        lower = reply.strip().lower()
+        approve_keywords = {"yes", "y", "ok", "okay", "proceed", "go", "approve", "sure",
+                            "go ahead", "do it", "continue", "confirmed", "confirm", "yep", "yeah"}
+        reject_keywords = {"no", "n", "cancel", "abort", "stop", "don't", "nope", "nah", "nevermind", "never mind"}
+
+        tokens = set(lower.replace(",", " ").replace(".", " ").split())
+        if tokens & approve_keywords:
+            return "approve"
+        if tokens & reject_keywords:
+            return "reject"
+        # If the reply looks like a file path, identifier, or other substantive
+        # info the agent requested, treat it as approval (it provides the data).
+        if re.search(r'[A-Za-z]:[/\\]|/[a-z]|\.[ct]sv\b|\.csv\b|\.xlsx?\b|\.h5ad\b', lower):
+            return "approve"
+        # If the reply is substantial (>3 words), assume it provides the requested info
+        if len(lower.split()) > 3:
+            return "approve"
+        return "unclear"
+
+    def _build_direct_answer(self, prompt: str) -> tuple[list, str]:
+        """Produce a direct <solution> for explanation/strategy prompts that
+        do not require code execution.
+
+        Returns:
+            (log, answer) — same shape as ``go()`` output.
+        """
+        system_msg = (
+            "You are a helpful biomedical assistant. The user has asked a question "
+            "that can be answered directly without running any code or tools. "
+            "Provide a thorough, well-structured answer. "
+            "Wrap your entire answer inside <solution>...</solution> tags."
+        )
+        messages = [SystemMessage(content=system_msg), HumanMessage(content=prompt)]
+        response = self.llm.invoke(messages)
+        answer = response.content if isinstance(response.content, str) else str(response.content)
+
+        # Ensure the answer has <solution> tags
+        if "<solution>" not in answer:
+            answer = f"<solution>{answer}</solution>"
+        if "</solution>" not in answer:
+            answer += "</solution>"
+
+        log_entry = pretty_print(AIMessage(content=answer))
+        return [log_entry], answer
+
+    # ------------------------------------------------------------------
+    # Main entry points: go() and go_stream()
+    # ------------------------------------------------------------------
+
     def go(self, prompt):
         """Execute the agent with the given prompt.
 
-        Args:
-            prompt: The user's query
+        If a pending interaction exists from a previous call, the *prompt* is
+        treated as the user's reply and execution resumes from the paused
+        state.
 
+        Args:
+            prompt: The user's query **or** the user's reply to a pending
+                ``<ask_user>`` interaction.
+
+        Returns:
+            (log, answer) — backward-compatible tuple.
+        """
+        # ── Step 1: Resume check ──────────────────────────────────────
+        if getattr(self, "_pending_interaction", False):
+            return self._resume_from_pending(prompt)
+
+        self.critic_count = 0
+        self.user_task = prompt
+
+        # ── Step 2: Categorisation ────────────────────────────────────
+        category, confidence = self._categorize_query(prompt)
+
+        # ── Step 3: Routing ───────────────────────────────────────────
+        if category == "needs_user_input":
+            # Ask the model to formulate the question to the user.
+            ask_prompt = (
+                "The user's request is missing critical information or is ambiguous. "
+                "Politely ask the user for the information you need to proceed. "
+                "Wrap your question inside <ask_user>...</ask_user> tags.\n\n"
+                f"User request: {prompt}"
+            )
+            response = self.llm.invoke([
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=ask_prompt),
+            ])
+            answer = response.content if isinstance(response.content, str) else str(response.content)
+            if "<ask_user>" not in answer:
+                answer = f"<ask_user>{answer}</ask_user>"
+            if "</ask_user>" not in answer:
+                answer += "</ask_user>"
+
+            # Persist pending state
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = category
+            self._pending_execution_plan = None
+            self._pending_messages = [HumanMessage(content=prompt), AIMessage(content=answer)]
+
+            log_entry = pretty_print(AIMessage(content=answer))
+            self.log = [log_entry]
+            self._conversation_state = None
+            return self.log, answer
+
+        if category == "direct_answer_no_execute":
+            log, answer = self._build_direct_answer(prompt)
+            self.log = log
+            self._conversation_state = None
+            return self.log, answer
+
+        # category == "autonomous_execute"
+        # ── Step 3b: Approval gate ─────────────────────────────────────
+        if default_config.require_execution_approval and default_config.enable_user_pause_tag:
+            approval_msg = (
+                f"<ask_user>This request requires running an analysis pipeline. "
+                f"Do you want me to proceed?\n\nRequest: {prompt}</ask_user>"
+            )
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = category
+            self._pending_execution_plan = None
+            self._pending_messages = [HumanMessage(content=prompt), AIMessage(content=approval_msg)]
+
+            log_entry = pretty_print(AIMessage(content=approval_msg))
+            self.log = [log_entry]
+            self._conversation_state = None
+            return self.log, approval_msg
+
+        # No approval required — execute immediately
+        return self._run_graph(prompt)
+
+    def _resume_from_pending(self, user_reply: str):
+        """Handle the second call to ``go()`` when a pending interaction
+        exists.
+        """
+        intent = self._interpret_user_reply(user_reply)
+        prev_context = getattr(self, "_pending_prompt_context", "")
+        prev_messages = getattr(self, "_pending_messages", [])
+
+        # Clear pending state
+        self._pending_interaction = False
+
+        if intent == "reject":
+            cancel_msg = "<solution>Understood — request cancelled.</solution>"
+            log_entry = pretty_print(AIMessage(content=cancel_msg))
+            self.log = [log_entry]
+            self._conversation_state = None
+            self._pending_prompt_context = ""
+            self._pending_category = ""
+            self._pending_execution_plan = None
+            self._pending_messages = []
+            return self.log, cancel_msg
+
+        if intent == "unclear":
+            ask_again = "<ask_user>I'm not sure how to interpret your reply. Please confirm whether I should proceed with execution.</ask_user>"
+            self._pending_interaction = True  # stay in pending
+            log_entry = pretty_print(AIMessage(content=ask_again))
+            self.log = [log_entry]
+            self._conversation_state = None
+            return self.log, ask_again
+
+        # intent == "approve" — resume execution
+        # Construct the full prompt, incorporating the user reply as context
+        full_prompt = prev_context
+        if user_reply.strip().lower() not in {"yes", "y", "ok", "okay", "proceed", "go", "approve", "sure",
+                                                "go ahead", "do it", "continue", "confirmed", "confirm", "yep", "yeah"}:
+            # The reply contains substantive new info — append it
+            full_prompt = f"{prev_context}\n\nAdditional user input: {user_reply}"
+
+        self._pending_prompt_context = ""
+        self._pending_category = ""
+        self._pending_execution_plan = None
+        self._pending_messages = []
+
+        return self._run_graph(full_prompt, prior_messages=prev_messages)
+
+    def _run_graph(self, prompt: str, prior_messages: list[BaseMessage] | None = None):
+        """Run the LangGraph execution loop (the original ``go()`` logic).
+
+        Args:
+            prompt: The user's fully resolved prompt.
+            prior_messages: Optional list of messages from a prior paused
+                session to prepend.
         """
         self.critic_count = 0
         self.user_task = prompt
@@ -1859,7 +2208,23 @@ Each library is listed with its description to help you understand its functiona
             selected_resources_names = self._prepare_resources_for_retrieval(prompt)
             self.update_system_prompt_with_selected_resources(selected_resources_names)
 
-        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None, "step_count": 0, "error_history": []}
+        messages: list[BaseMessage] = []
+        if prior_messages:
+            messages.extend(prior_messages)
+        # Only add the HumanMessage if it isn't already the last message
+        if not messages or not (isinstance(messages[-1], HumanMessage) and messages[-1].content == prompt):
+            messages.append(HumanMessage(content=prompt))
+
+        inputs = {
+            "messages": messages,
+            "next_step": None,
+            "step_count": 0,
+            "error_history": [],
+            "pending_interaction": False,
+            "pending_prompt_context": "",
+            "pending_category": "",
+            "pending_execution_plan": None,
+        }
         config = {"recursion_limit": 100, "configurable": {"thread_id": 42}}
         self.log = []
 
@@ -1872,6 +2237,14 @@ Each library is listed with its description to help you understand its functiona
             self.log.append(out)
             final_state = s  # Store the latest state
 
+        # If the graph ended with a pending interaction, persist it
+        if final_state and final_state.get("pending_interaction"):
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = final_state.get("pending_category", "")
+            self._pending_execution_plan = final_state.get("pending_execution_plan")
+            self._pending_messages = list(final_state.get("messages", []))
+
         # Store the conversation state for markdown generation
         self._conversation_state = final_state
 
@@ -1883,20 +2256,97 @@ Each library is listed with its description to help you understand its functiona
         This function returns a generator that yields each step of the agent's execution,
         allowing for real-time monitoring of the agent's progress.
 
+        If a pending interaction exists, the prompt is treated as the user's reply.
+
         Args:
             prompt: The user's query
 
         Yields:
             dict: Each step of the agent's execution containing the current message and state
         """
+        # ── Resume check ──────────────────────────────────────────────
+        if getattr(self, "_pending_interaction", False):
+            log, answer = self._resume_from_pending(prompt)
+            for entry in log:
+                yield {"output": entry}
+            return
+
         self.critic_count = 0
         self.user_task = prompt
 
+        # ── Categorisation ────────────────────────────────────────────
+        category, confidence = self._categorize_query(prompt)
+
+        if category == "needs_user_input":
+            ask_prompt = (
+                "The user's request is missing critical information or is ambiguous. "
+                "Politely ask the user for the information you need to proceed. "
+                "Wrap your question inside <ask_user>...</ask_user> tags.\n\n"
+                f"User request: {prompt}"
+            )
+            response = self.llm.invoke([
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=ask_prompt),
+            ])
+            answer = response.content if isinstance(response.content, str) else str(response.content)
+            if "<ask_user>" not in answer:
+                answer = f"<ask_user>{answer}</ask_user>"
+            if "</ask_user>" not in answer:
+                answer += "</ask_user>"
+
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = category
+            self._pending_execution_plan = None
+            self._pending_messages = [HumanMessage(content=prompt), AIMessage(content=answer)]
+
+            log_entry = pretty_print(AIMessage(content=answer))
+            self.log = [log_entry]
+            self._conversation_state = None
+            yield {"output": log_entry}
+            return
+
+        if category == "direct_answer_no_execute":
+            log, answer = self._build_direct_answer(prompt)
+            self.log = log
+            self._conversation_state = None
+            for entry in log:
+                yield {"output": entry}
+            return
+
+        # autonomous_execute — approval gate
+        if default_config.require_execution_approval and default_config.enable_user_pause_tag:
+            approval_msg = (
+                f"<ask_user>This request requires running an analysis pipeline. "
+                f"Do you want me to proceed?\n\nRequest: {prompt}</ask_user>"
+            )
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = category
+            self._pending_execution_plan = None
+            self._pending_messages = [HumanMessage(content=prompt), AIMessage(content=approval_msg)]
+
+            log_entry = pretty_print(AIMessage(content=approval_msg))
+            self.log = [log_entry]
+            self._conversation_state = None
+            yield {"output": log_entry}
+            return
+
+        # No approval required — stream the graph
         if self.use_tool_retriever:
             selected_resources_names = self._prepare_resources_for_retrieval(prompt)
             self.update_system_prompt_with_selected_resources(selected_resources_names)
 
-        inputs = {"messages": [HumanMessage(content=prompt)], "next_step": None, "step_count": 0, "error_history": []}
+        inputs = {
+            "messages": [HumanMessage(content=prompt)],
+            "next_step": None,
+            "step_count": 0,
+            "error_history": [],
+            "pending_interaction": False,
+            "pending_prompt_context": "",
+            "pending_category": "",
+            "pending_execution_plan": None,
+        }
         config = {"recursion_limit": 100, "configurable": {"thread_id": 42}}
         self.log = []
 
@@ -1911,6 +2361,14 @@ Each library is listed with its description to help you understand its functiona
 
             # Yield the current step
             yield {"output": out}
+
+        # If the graph ended with a pending interaction, persist it
+        if final_state and final_state.get("pending_interaction"):
+            self._pending_interaction = True
+            self._pending_prompt_context = prompt
+            self._pending_category = final_state.get("pending_category", "")
+            self._pending_execution_plan = final_state.get("pending_execution_plan")
+            self._pending_messages = list(final_state.get("messages", []))
 
         # Store the conversation state for markdown generation
         self._conversation_state = final_state
@@ -2545,7 +3003,7 @@ Each library is listed with its description to help you understand its functiona
         Returns:
             Updated markdown content string with formatted content added
         """
-        # Process lists first, then execute tags
+        # Process lists first, then execute tags, then ask_user tags
         formatted_content = format_lists_in_text(clean_output)
 
         # Create a wrapper function for the tool parsing
@@ -2553,6 +3011,7 @@ Each library is listed with its description to help you understand its functiona
             return self._parse_tool_calls_with_modules(code)
 
         formatted_content = format_execute_tags_in_content(formatted_content, parse_tool_calls_wrapper)
+        formatted_content = format_ask_user_in_content(formatted_content)
         return content + f"{formatted_content}\n\n"
 
     def _add_execution_plots(self, matching_execution, content, added_plots, include_images):
@@ -2785,7 +3244,16 @@ Each library is listed with its description to help you understand its functiona
             agent_messages.append(HumanMessage(content=text_input))
 
             # Prepare inputs for the agent
-            inputs = {"messages": agent_messages, "next_step": None, "step_count": 0, "error_history": []}
+            inputs = {
+                "messages": agent_messages,
+                "next_step": None,
+                "step_count": 0,
+                "error_history": [],
+                "pending_interaction": False,
+                "pending_prompt_context": "",
+                "pending_category": "",
+                "pending_execution_plan": None,
+            }
             config = {"recursion_limit": 100, "configurable": {"thread_id": thread_id}}
 
             # Stream the agent's responses
@@ -2835,7 +3303,7 @@ Each library is listed with its description to help you understand its functiona
                 if isinstance(message.content, str):
                     # Extract thinking/reasoning part (text before any tags)
                     tag_positions = []
-                    for tag in ["<execute>", "<solution>", "<observation>"]:
+                    for tag in ["<execute>", "<solution>", "<observation>", "<ask_user>"]:
                         pos = message.content.find(tag)
                         if pos != -1:
                             tag_positions.append(pos)
@@ -2867,6 +3335,27 @@ Each library is listed with its description to help you understand its functiona
                         )
                         self.main_history_copy += [{"role": "assistant", "content": solution}]
                         solution_found = True
+                        yield inner_history, main_history
+
+                    # Check for ask_user tag
+                    ask_user_match = re.search(r"<ask_user>(.*?)</ask_user>", message.content, re.DOTALL)
+                    if ask_user_match:
+                        ask_content = ask_user_match.group(1).strip()
+                        main_history.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=f"🔹 **User Input Required**\n\n{ask_content}",
+                                metadata={"title": "❓ Input Required", "log": "Agent is waiting for user input"},
+                            )
+                        )
+                        inner_history.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=f"🔹 **Paused — waiting for user input**\n\n{ask_content}",
+                                metadata={"title": "⏸️ Paused"},
+                            )
+                        )
+                        self.main_history_copy += [{"role": "assistant", "content": ask_content}]
                         yield inner_history, main_history
 
                     # Check for execute tag

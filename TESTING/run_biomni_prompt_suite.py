@@ -14,15 +14,40 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
 import sys
 import traceback
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Default agent output directory (change here or via --agent-output-dir CLI).
+# All files the agent produces (CSVs, PDFs, images, …) are saved under
+# <AGENT_OUTPUT_DIR>/<run_timestamp>/.
+# ---------------------------------------------------------------------------
+DEFAULT_AGENT_OUTPUT_DIR = "AGENT_OUTPUT"
+
 # Ensure repo root is importable when script is run as: python TESTING/run_biomni_prompt_suite.py
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+
+def _normalize_windows_paths(text: str) -> str:
+    """Replace Windows backslash paths with forward slashes.
+
+    This prevents the LLM from generating Python code where ``\\U``,
+    ``\\G``, etc. are mis-interpreted as escape sequences.
+    """
+    def _replace(m: re.Match) -> str:
+        return m.group(0).replace("\\", "/")
+
+    # Match quoted Windows-style absolute paths (e.g. "C:\Users\...")
+    return re.sub(
+        r'["\']?[A-Za-z]:\\[^"\'<>\n]+["\']?',
+        _replace,
+        text,
+    )
 
 
 def load_prompts(prompt_file: Path) -> list[str]:
@@ -31,7 +56,7 @@ def load_prompts(prompt_file: Path) -> list[str]:
 
     raw = prompt_file.read_text(encoding="utf-8")
     chunks = [c.strip() for c in raw.split("\n\n")]
-    prompts = [c for c in chunks if c]
+    prompts = [_normalize_windows_paths(c) for c in chunks if c]
     return prompts
 
 
@@ -44,6 +69,40 @@ def extract_solution(raw_text: str) -> str:
     return raw_text.strip()
 
 
+def extract_tagged_content(raw_text: str) -> tuple[str, str]:
+    """Extract primary tagged content from agent output.
+
+    Returns:
+        (tag, content) where tag is one of: "solution", "ask_user", or "raw".
+    """
+    if not raw_text:
+        return "raw", ""
+
+    solution_match = re.search(r"<solution>(.*?)</solution>", raw_text, re.DOTALL | re.IGNORECASE)
+    if solution_match:
+        return "solution", solution_match.group(1).strip()
+
+    ask_user_match = re.search(r"<ask_user>(.*?)</ask_user>", raw_text, re.DOTALL | re.IGNORECASE)
+    if ask_user_match:
+        return "ask_user", ask_user_match.group(1).strip()
+
+    return "raw", raw_text.strip()
+
+
+def is_approval_request(ask_user_text: str) -> bool:
+    text = ask_user_text.lower()
+    approval_markers = [
+        "do you want me to proceed",
+        "should i proceed",
+        "confirm",
+        "approval",
+        "go ahead",
+        "proceed with execution",
+        "proceed with the analysis",
+    ]
+    return any(marker in text for marker in approval_markers)
+
+
 def safe_name(index: int, prompt: str) -> str:
     short = "_".join(prompt.strip().split()[:8]).lower()
     short = re.sub(r"[^a-z0-9_]+", "", short)
@@ -51,6 +110,27 @@ def safe_name(index: int, prompt: str) -> str:
     if not short:
         short = "prompt"
     return f"{index:02d}_{short}.txt"
+
+
+def collect_agent_files(
+    agent_run_dir: Path,
+    *,
+    exclude_extensions: set[str] | None = None,
+) -> list[Path]:
+    """Return a sorted list of files the agent produced in *agent_run_dir*.
+
+    Walks the directory recursively.  Hidden files (starting with '.') and
+    files matching *exclude_extensions* are skipped.
+    """
+    if exclude_extensions is None:
+        exclude_extensions = set()
+    found: list[Path] = []
+    if not agent_run_dir.exists():
+        return found
+    for p in sorted(agent_run_dir.rglob("*")):
+        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() not in exclude_extensions:
+            found.append(p)
+    return found
 
 
 def write_result_file(
@@ -64,7 +144,11 @@ def write_result_file(
     logs: list[str],
     raw_answer: str,
     parsed_answer: str,
+    final_tag: str,
+    status: str,
+    turns: int,
     error: str | None,
+    agent_files: list[Path] | None = None,
 ) -> None:
     lines: list[str] = []
     lines.append("=" * 80)
@@ -73,6 +157,9 @@ def write_result_file(
     lines.append(f"Started: {started_at}")
     lines.append(f"Ended:   {ended_at}")
     lines.append(f"Elapsed seconds: {elapsed_s:.2f}")
+    lines.append(f"Status:  {status}")
+    lines.append(f"Final tag: {final_tag}")
+    lines.append(f"Turns: {turns}")
     lines.append("")
 
     lines.append("PROMPT")
@@ -104,6 +191,15 @@ def write_result_file(
     lines.append(parsed_answer if parsed_answer else "(Empty)")
     lines.append("")
 
+    lines.append("AGENT OUTPUT FILES")
+    lines.append("-" * 80)
+    if agent_files:
+        for af in agent_files:
+            lines.append(str(af))
+    else:
+        lines.append("(No files produced)")
+    lines.append("")
+
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -127,11 +223,21 @@ def run_suite(args: argparse.Namespace) -> int:
     run_dir = outdir / f"run_{run_ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Agent output directory (for CSVs, PDFs, images, etc.) ---------------
+    agent_output_base = Path(args.agent_output_dir).resolve()
+    agent_run_dir = agent_output_base / f"run_{run_ts}"
+    agent_run_dir.mkdir(parents=True, exist_ok=True)
+    original_cwd = Path.cwd()
+
     print(f"Loaded {len(prompts)} prompts from: {prompt_file}")
     print(f"Saving results under: {run_dir}")
+    print(f"Agent output files:   {agent_run_dir}")
+
+    # Resolve data_path to absolute *before* any chdir.
+    abs_data_path = str(Path(args.data_path).resolve())
 
     agent = A1(
-        path=args.data_path,
+        path=abs_data_path,
         llm=args.model,
         source=args.source,
         use_tool_retriever=(not args.disable_tool_retriever),
@@ -140,7 +246,7 @@ def run_suite(args: argparse.Namespace) -> int:
     )
 
     summary_lines: list[str] = []
-    summary_lines.append("prompt_index\tstatus\toutput_file\terror")
+    summary_lines.append("prompt_index\tstatus\tfinal_tag\tturns\toutput_file\terror")
 
     for i, prompt in enumerate(prompts, start=1):
         started = dt.datetime.now()
@@ -151,19 +257,85 @@ def run_suite(args: argparse.Namespace) -> int:
         logs: list[str] = []
         raw_answer = ""
         parsed_answer = ""
+        final_tag = "raw"
+        turns = 0
         error_text: str | None = None
 
         try:
-            logs, raw_answer = agent.go(prompt)
-            parsed_answer = extract_solution(raw_answer)
-            status = "ok"
+            # Change into the agent output directory so any files the LLM
+            # code writes (e.g. df.to_csv, plt.savefig) land there.
+            os.chdir(agent_run_dir)
+
+            aggregated_logs: list[str] = []
+            current_input = prompt
+            status = "incomplete"
+
+            for turn in range(1, args.max_turns + 1):
+                step_logs, raw_answer = agent.go(current_input)
+                turns = turn
+
+                if step_logs:
+                    aggregated_logs.extend(step_logs)
+                else:
+                    aggregated_logs.append("(No logs captured for this turn)")
+
+                final_tag, tagged_content = extract_tagged_content(raw_answer)
+                parsed_answer = tagged_content
+
+                if final_tag == "solution":
+                    status = "ok"
+                    break
+
+                if final_tag == "ask_user":
+                    if args.auto_approve and is_approval_request(tagged_content):
+                        current_input = args.approval_reply
+                        continue
+                    if args.interactive:
+                        print(f"\n\U0001f916 Agent asks:\n{tagged_content}")
+                        print("(Type your reply, or 'skip' to move to the next prompt)")
+                        user_reply = input("> ").strip()
+                        if user_reply.lower() == "skip":
+                            status = "skipped"
+                            break
+                        current_input = user_reply
+                        continue
+                    status = "pending_user_input"
+                    break
+
+                status = "incomplete"
+                break
+
+            if status == "incomplete" and final_tag == "ask_user":
+                status = "pending_user_input"
+
+            # Avoid pending-state leakage across prompts when unresolved
+            # Only cancel if we are NOT in interactive mode (interactive mode
+            # already resolved the ask_user via stdin or explicit 'skip').
+            if (
+                status == "pending_user_input"
+                and not args.interactive
+                and getattr(agent, "_pending_interaction", False)
+            ):
+                try:
+                    agent.go("cancel")
+                except Exception:
+                    pass
+
+            logs = aggregated_logs
         except Exception:
             error_text = traceback.format_exc()
             status = "error"
+        finally:
+            # Always restore working directory so log-file writes and the
+            # next prompt iteration start from the original location.
+            os.chdir(original_cwd)
 
         ended = dt.datetime.now()
         ended_s = ended.isoformat(timespec="seconds")
         elapsed = (ended - started).total_seconds()
+
+        # Collect every file the agent produced during this prompt.
+        agent_files = collect_agent_files(agent_run_dir)
 
         filename = safe_name(i, prompt)
         result_path = run_dir / filename
@@ -178,10 +350,18 @@ def run_suite(args: argparse.Namespace) -> int:
             logs=logs,
             raw_answer=raw_answer,
             parsed_answer=parsed_answer,
+            final_tag=final_tag,
+            status=status,
+            turns=turns,
             error=error_text,
+            agent_files=agent_files,
         )
 
-        summary_lines.append(f"{i}\t{status}\t{result_path.name}\t{(error_text.splitlines()[-1] if error_text else '')}")
+        summary_lines.append(
+            f"{i}\t{status}\t{final_tag}\t{turns}\t{result_path.name}\t{(error_text.splitlines()[-1] if error_text else '')}"
+        )
+        if agent_files:
+            print(f"    📂 {len(agent_files)} output file(s) in {agent_run_dir}")
         print(f"[{i}/{len(prompts)}] {status.upper()} -> {result_path.name}")
 
     summary_path = run_dir / "summary.tsv"
@@ -217,6 +397,36 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=True,
         help="Skip datalake auto-download in A1 init (default: enabled).",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=3,
+        help="Maximum go() turns per prompt (for ask_user pause/resume flow).",
+    )
+    parser.add_argument(
+        "--auto-approve",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-reply to approval-style <ask_user> prompts (default: true).",
+    )
+    parser.add_argument(
+        "--approval-reply",
+        default="yes proceed",
+        help="Reply text sent when --auto-approve handles approval prompts.",
+    )
+    parser.add_argument(
+        "--interactive",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prompt for user input when the agent asks a non-approval question "
+        "(default: true). Use --no-interactive for fully unattended runs.",
+    )
+    parser.add_argument(
+        "--agent-output-dir",
+        default=DEFAULT_AGENT_OUTPUT_DIR,
+        help=f"Base directory for agent-produced files (CSVs, PDFs, images, …). "
+        f"A timestamped sub-folder is created per run. (default: {DEFAULT_AGENT_OUTPUT_DIR})",
     )
     return parser.parse_args()
 

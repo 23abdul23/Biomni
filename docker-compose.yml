@@ -3,19 +3,13 @@ services:
     build:
       context: .
       args:
-        HTTP_PROXY: "http://172.31.2.4:8080"
-        HTTPS_PROXY: "http://172.31.2.4:8080"
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
         NO_PROXY: "localhost,127.0.0.1"
     image: biomni:local
     tty: true
     stdin_open: true
     environment:
-      - HTTP_PROXY=http://172.31.2.4:8080
-      - HTTPS_PROXY=http://172.31.2.4:8080
-      - http_proxy=http://172.31.2.4:8080
-      - https_proxy=http://172.31.2.4:8080
-      - NO_PROXY=localhost,127.0.0.1
-      - no_proxy=localhost,127.0.0.1
       - ANTHROPIC_API_KEY
       - OPENAI_API_KEY
       - OPENAI_ENDPOINT
@@ -32,3 +26,12 @@ services:
       - "7860:7860"
     volumes:
       - ./data:/opt/biomni/data
+    networks:
+      - biomni_default      # Keep its original network
+      - pdnet_pdnet-network # Attach to pdnet network permanently
+
+networks:
+  biomni_default:
+    driver: bridge
+  pdnet_pdnet-network:
+    external: true 
